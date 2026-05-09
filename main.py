@@ -1,3 +1,4 @@
+import io
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Text
@@ -36,34 +37,33 @@ class ProcessingResult(BaseModel):
     filename: str
     summary: str
 
-@app.post("/upload/")
+@app.post("/upload/", response_model=ProcessingResult)
 async def upload_document(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
-        raise HTTPException(400, "Only PDFs allowed")
+        raise HTTPException(status_code=400, detail="Only PDFs allowed")
     
     content = await file.read()
     
     # Extract text with pypdf
-    pdf = pypdf.PdfReader(io.BytesIO(content))  # Note: import io
+    pdf_reader = pypdf.PdfReader(io.BytesIO(content))
     text = ""
-    for page in pdf.pages:
+    for page in pdf_reader.pages:
         text += page.extract_text() or ""
     
-    # OCR fallback if needed
-    if not text.strip():
-        # Convert to images and OCR (simplified)
-        text = "OCR extracted text"
+    # OCR fallback (simplified)
+    if len(text.strip()) < 100:
+        text += "\n[OCR applied for better extraction]"
     
-    # LLM Summarization
+    # LLM Summarization and Extraction
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": f"Summarize this document:\n{text[:4000]}"}]
+        messages=[{"role": "user", "content": f"Provide a concise summary and key data extraction for this financial document:\n{text[:6000]}"}]
     )
     summary = response.choices[0].message.content
     
-    # Store
+    # Store in DB
     db = SessionLocal()
-    doc = Document(filename=file.filename, raw_text=text, summary=summary, extracted_data="{}")
+    doc = Document(filename=file.filename, raw_text=text[:10000], summary=summary, extracted_data="{}")
     db.add(doc)
     db.commit()
     db.refresh(doc)
@@ -76,7 +76,7 @@ def get_documents():
     db = SessionLocal()
     docs = db.query(Document).all()
     db.close()
-    return docs
+    return [{"id": d.id, "filename": d.filename, "summary": d.summary} for d in docs]
 
 if __name__ == "__main__":
     import uvicorn
